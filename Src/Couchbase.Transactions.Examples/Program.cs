@@ -1,8 +1,13 @@
 ﻿using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Couchbase.KeyValue;
+using Couchbase.Query;
 using Couchbase.Transactions.Config;
+using Couchbase.Transactions.Deferred;
 using Couchbase.Transactions.Error;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 
 namespace Couchbase.Transactions.Examples
@@ -13,6 +18,7 @@ namespace Couchbase.Transactions.Examples
         private readonly ICluster _cluster;
         private readonly IBucket _bucket;
         private readonly ICouchbaseCollection _collection;
+        private readonly ILogger<Program> _logger;
 
         public Program(ICluster cluster, IBucket bucket, ICouchbaseCollection collection, Transactions transactions)
         {
@@ -24,12 +30,17 @@ namespace Couchbase.Transactions.Examples
 
         static async Task Main(string[] args)
         {
+            // #tag::init[]
+            // Initialize the Couchbase cluster
             var options = new ClusterOptions().WithCredentials("Administrator", "password");
             var cluster = await Cluster.ConnectAsync("couchbase://localhost", options).ConfigureAwait(false);
             var bucket = await cluster.BucketAsync("default").ConfigureAwait(false);
             var collection = bucket.DefaultCollection();
 
+            // Create the single Transactions object
             var transactions = Transactions.Create(cluster, TransactionConfigBuilder.Create());
+            // #end::init[]
+
             using var program = new Program(cluster, bucket, collection, transactions);
 
 
@@ -42,12 +53,105 @@ namespace Couchbase.Transactions.Examples
             var transactions = Transactions.Create(_cluster,
                 TransactionConfigBuilder.Create()
                     .DurabilityLevel(DurabilityLevel.PersistToMajority)
-                   /* // #tag::config_warn[]
-                    .LogOnFailure(true, Event.Severity.WARN)
-                    // #end::config_warn[]*/
                     .Build());
             // #end::config[]
         }
+
+        void ConfigExpired()
+        {
+            // #tag::config-expiration[]
+            Transactions transactions = Transactions.Create(_cluster, TransactionConfigBuilder.Create()
+                .ExpirationTime(TimeSpan.FromSeconds(120))
+                .Build());
+            // #end::config-expiration[]
+        }
+
+        void ConfigCleanup(byte[] encoded)
+        {
+            // #tag::config-cleanup[]
+            Transactions transactions = Transactions.Create(_cluster, TransactionConfigBuilder.Create()
+                .CleanupClientAttempts(false)
+                .CleanupLostAttempts(false)
+                .CleanupWindow(TimeSpan.FromSeconds(120))
+                .Build());
+            // #end::config-cleanup[]
+        }
+
+        /*
+        async Task DeferredCommit1()
+        {
+
+            // #tag::defer1[]
+            try
+            {
+                var result = await _transactions.RunAsync(async (ctx)=>
+                {
+                    var initial = new {val = 1};
+                    await ctx.InsertAsync(_collection, "a-doc-id", initial).ConfigureAwait(false);
+
+                    // Defer means don't do a commit right now.  `serialized` in the result will be present.
+                    await ctx.DeferAsync().ConfigureAwait(false);
+                }).ConfigureAwait(false);
+
+                // Available because ctx.defer() was called
+                TransactionSerializedContext serialized = result.Serialized;
+
+                // This is going to store a serialized form of the transaction to pass around
+                var encoded = serialized.EncodeAsBytes();
+
+            }
+            catch (TransactionFailedException e)
+            {
+                // System.err is used for example, log failures to your own logging system
+                Console.Error.WriteLine("Transaction did not reach commit point");
+                Console.Error.WriteLine(e);
+            }
+            // #end::defer1[]
+        }
+
+        async Task DeferredCommit2(byte[] encoded)
+        {
+            // #tag::defer2[]
+            var serialized = TransactionSerializedContext.CreateFrom(encoded);
+
+            try
+            {
+                var result = await _transactions.RunAsync(async (ctx) =>
+                {
+                    await ctx.CommitAsync().ConfigureAwait(false);
+                });
+
+            }
+            catch (TransactionFailedException e)
+            {
+                // System.err is used for example, log failures to your own logging system
+                System.err.println("Transaction did not reach commit point");
+
+                for (LogDefer err : e.result().log().logs())
+                {
+                    System.err.println(err.toString());
+                }
+            }
+            // #end::defer2[]
+        }
+
+        async Task ConcurrentOpsAsync()
+        {
+            // #tag::concurrentOps[]
+
+            await _transactions.RunAsync(async (ctx) =>
+            {
+                var docIds = new[] { "doc1", "doc2", "doc3", "doc4", "doc5" };
+                var ops = docIds.Select(docId => ctx.GetAsync(_collection, docId)).ToList();
+
+                await Task.WhenAll(ops).ConfigureAwait(false);
+
+                await ctx.CommitAsync().ConfigureAwait(false);
+
+            }).ConfigureAwait(false);
+            // #end::concurrentOps[]
+        }
+        */
 
         async Task CreateAsync()
         {
@@ -196,6 +300,233 @@ namespace Couchbase.Transactions.Examples
                 await ctx.ReplaceAsync(doc, content).ConfigureAwait(false);
             }).ConfigureAwait(false);
             // #end::commit[]
+        }
+
+
+        public async Task PlayerHitsMonster(string actionUuid, int damage, string playerId, string monsterId)
+        {
+            // #tag::full[]
+            try
+            {
+                await _transactions.RunAsync(async (ctx) =>
+                {
+                    _logger.LogInformation(
+                        "Starting transaction, player {playerId} is hitting monster {monsterId} for {damage} points of damage.",
+                        playerId, monsterId, damage);
+
+                    var monster = await ctx.GetAsync(_collection, monsterId).ConfigureAwait(false);
+                    var player = await ctx.GetAsync(_collection, playerId).ConfigureAwait(false);
+
+                    var monsterContent = monster.ContentAs<JObject>();
+                    var playerContent = player.ContentAs<JObject>();
+
+                    var monsterHitPoints = monsterContent.GetValue("hitpoints").ToObject<int>();
+                    var monsterNewHitPoints = monsterHitPoints - damage;
+
+                    _logger.LogInformation(
+                        "Monster {monsterId} had {monsterHitPoints} hitpoints, took {damage} damage, now has {monsterNewHitPoints} hitpoints.",
+                        monsterId, monsterHitPoints, damage, monsterNewHitPoints);
+
+                    if (monsterNewHitPoints <= 0)
+                    {
+                        // Monster is killed.  The remove is just for demoing, and a more realistic example would set a
+                        // "dead" flag or similar.
+
+                        await ctx.RemoveAsync(monster).ConfigureAwait(false);
+
+                        // The player earns experience for killing the monster
+                        var experienceForKillingMonster =
+                            monsterContent.GetValue("experienceWhenKilled").ToObject<int>();
+                        var playerExperience = playerContent.GetValue("experiance").ToObject<int>();
+                        var playerNewExperience = playerExperience + experienceForKillingMonster;
+                        var playerNewLevel = CalculateLevelForExperience(playerNewExperience);
+
+                        _logger.LogInformation(
+                            "Monster {monsterId} was killed.  Player {playerId} gains {experienceForKillingMonster} experience, now has level {playerNewLevel}.",
+                            monsterId, playerId, experienceForKillingMonster, playerNewLevel);
+
+                        playerContent["experience"] = playerNewExperience;
+                        playerContent["level"] = playerNewLevel;
+
+                        await ctx.ReplaceAsync(player, playerContent).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("Monster {monsterId} is damaged but alive.", monsterId);
+
+                        // Monster is damaged but still alive
+                        monsterContent.Add("hitpoints", monsterNewHitPoints);
+
+                        await ctx.ReplaceAsync(monster, monsterContent).ConfigureAwait(false);
+                    }
+
+                    _logger.LogInformation("About to commit transaction");
+
+                }).ConfigureAwait(false);
+            }
+            catch (TransactionCommitAmbiguousException e)
+            {
+                _logger.LogWarning("Transaction possibly committed:{0}{1}", Environment.NewLine, e);
+            }
+            catch (TransactionFailedException e)
+            {
+                // The operation timed out (the default timeout is 15 seconds) despite multiple attempts to commit the
+                // transaction logic.   Both the monster and the player will be untouched.
+
+                // This situation should be very rare.  It may be reasonable in this situation to ignore this particular
+                // failure, as the downside is limited to the player experiencing a temporary glitch in a fast-moving MMO.
+
+                // So, we will just log the error
+                _logger.LogWarning("Transaction did not reach commit:{0}{1}", Environment.NewLine, e);
+            }
+            // #end::full[]
+
+            _logger.LogInformation("Transaction is complete");
+        }
+
+        private int CalculateLevelForExperience(int exp)
+        {
+            return exp / 100;
+        }
+
+        private async Task Rollback()
+        {
+            const int costOfItem = 10;
+            // #tag::rollback[]
+            await _transactions.RunAsync(async (ctx) => {
+                var customer = await ctx.GetAsync(_collection, "customer-name").ConfigureAwait(false);
+
+                if (customer.ContentAs<dynamic>().balance < costOfItem)
+                {
+                    await ctx.RollbackAsync().ConfigureAwait(false);
+                }
+                // else continue transaction
+            }).ConfigureAwait(false);
+            // #end::rollback[]
+        }
+
+        public class BalanceInsufficientException : Exception { }
+
+        private async Task RollbackCause()
+        {
+            const int costOfItem = 10;
+
+            // #tag::rollback-cause[]
+
+            try
+            {
+                await _transactions.RunAsync(async ctx =>
+                {
+                    var customer = await ctx.GetAsync(_collection, "customer-name").ConfigureAwait(false);
+
+                    if (customer.ContentAs<dynamic>().balance < costOfItem) throw new BalanceInsufficientException();
+                    // else continue transaction
+                }).ConfigureAwait(false);
+            }
+            catch (TransactionCommitAmbiguousException e)
+            {
+                // This exception can only be thrown at the commit point, after the
+                // BalanceInsufficient logic has been passed, so there is no need to
+                // check getCause here.
+                Console.Error.WriteLine("Transaction possibly committed");
+                Console.Error.WriteLine(e);
+            }
+            catch (TransactionFailedException e)
+            {
+                Console.Error.WriteLine("Transaction did not reach commit point");
+            }
+
+            // #end::rollback-cause[]
+        }
+
+        async Task CompleteErrorHandling()
+        {
+            // #tag::full-error-handling[]
+            try
+            {
+                var result = await _transactions.RunAsync(async (ctx) => {
+                    // ... transactional code here ...
+                });
+
+                // The transaction definitely reached the commit point. Unstaging
+                // the individual documents may or may not have completed
+
+                if (result.UnstagingComplete)
+                {
+                    // Operations with non-transactional actors will want
+                    // unstagingComplete() to be true.
+                    await _cluster.QueryAsync<dynamic>(" ... N1QL ... ",
+                        new QueryOptions()).ConfigureAwait(false);
+
+                    var documentKey = "a document key involved in the transaction";
+                    var getResult = await _collection.GetAsync(documentKey).ConfigureAwait(false);
+                }
+                else
+                {
+                    // This step is completely application-dependent.  It may
+                    // need to throw its own exception, if it is crucial that
+                    // result.unstagingComplete() is true at this point.
+                    // (Recall that the asynchronous cleanup process will
+                    // complete the unstaging later on).
+                }
+            }
+            catch (TransactionCommitAmbiguousException err)
+            {
+                // The transaction may or may not have reached commit point
+                Console.Error.WriteLine("Transaction returned TransactionCommitAmbiguous and" +
+                        " may have succeeded, logs:");
+
+                // Of course, the application will want to use its own logging rather
+                // than System.err
+                Console.Error.WriteLine(err);
+            }
+            catch (TransactionFailedException err)
+            {
+                // The transaction definitely did not reach commit point
+                Console.Error.WriteLine("Transaction failed with TransactionFailed, logs:");
+                Console.Error.WriteLine(err);
+            }
+            // #end::full-error-handling[]
+        }
+
+
+        async Task CompleteLogging()
+        {
+            // #tag::full-logging[]
+            //Logging dependencies
+            var services = new ServiceCollection();
+            services.AddLogging(builder =>
+            {
+                builder.AddFile(AppContext.BaseDirectory);
+                builder.AddConsole();
+            });
+            await using var provider = services.BuildServiceProvider();
+            var loggerFactory = provider.GetService<ILoggerFactory>();
+            var logger = loggerFactory.CreateLogger<Program>();
+
+            //create the transactions object and add the ILoggerFactory
+            var transactions = Transactions.Create(_cluster,
+                TransactionConfigBuilder.Create().LoggerFactory(loggerFactory));
+            try
+            {
+                var result = await transactions.RunAsync(async ctx => {
+                    // ... transactional code here ...
+                });
+            }
+            catch (TransactionCommitAmbiguousException err)
+            {
+                // The transaction may or may not have reached commit point
+                logger.LogInformation("Transaction returned TransactionCommitAmbiguous and" +
+                            " may have succeeded, logs:");
+                Console.Error.WriteLine(err);
+            }
+            catch (TransactionFailedException err)
+            {
+                // The transaction definitely did not reach commit point
+                logger.LogInformation("Transaction failed with TransactionFailed, logs:");
+                Console.Error.WriteLine(err);
+            }
+            // #end::full-logging[]
         }
 
         public void Dispose()
