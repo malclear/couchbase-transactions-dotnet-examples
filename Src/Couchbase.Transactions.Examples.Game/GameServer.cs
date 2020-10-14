@@ -71,7 +71,7 @@ namespace Couchbase.Transactions.Examples.Game
                         _logger.LogInformation("Monster {monsterId} is damaged but alive.", monsterId);
 
                         // Monster is damaged but still alive
-                        monsterContent.Add("hitpoints", monsterNewHitPoints);
+                        monsterContent["hitpoints"] = monsterNewHitPoints;
 
                         await ctx.ReplaceAsync(monster, monsterContent).ConfigureAwait(false);
                     }
