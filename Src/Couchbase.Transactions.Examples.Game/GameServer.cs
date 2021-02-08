@@ -71,7 +71,7 @@ namespace Couchbase.Transactions.Examples.Game
                         _logger.LogInformation("Monster {monsterId} is damaged but alive.", monsterId);
 
                         // Monster is damaged but still alive
-                        monsterContent.Add("hitpoints", monsterNewHitPoints);
+                        monsterContent["hitpoints"] = monsterNewHitPoints;
 
                         await ctx.ReplaceAsync(monster, monsterContent).ConfigureAwait(false);
                     }
@@ -82,7 +82,7 @@ namespace Couchbase.Transactions.Examples.Game
             }
             catch (TransactionCommitAmbiguousException e)
             {
-                _logger.LogWarning("Transaction possibly committed:{0}{1}", Environment.NewLine, e);
+                _logger.LogWarning("Transaction possibly    committed:{0}{1}", Environment.NewLine, e);
             }
             catch (TransactionFailedException e)
             {

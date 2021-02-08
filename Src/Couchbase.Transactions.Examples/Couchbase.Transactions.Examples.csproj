@@ -7,13 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Couchbase.Transactions" Version="1.0.0-beta.1" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="3.1.8" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="3.1.8" />
     <PackageReference Include="Serilog.Extensions.Logging.File" Version="2.0.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\..\..\couchbase-transactions-dotnet\src\Couchbase.Transactions\Couchbase.Transactions.csproj" />
   </ItemGroup>
 
 </Project>

@@ -22,7 +22,7 @@ namespace game
             Parser.Default.ParseArguments<Options>(args).WithParsed(RunOptions);
 
             var config = TransactionConfigBuilder.Create();
-            config.DurabilityLevel(ParseDurability(_options.Durability));
+            config.DurabilityLevel(ParseDurability("none"));
 
             // Initialize the Couchbase cluster
             var cluster = await Cluster.ConnectAsync(_options.Cluster, _options.UserName, _options.Password).ConfigureAwait(false);

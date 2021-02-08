@@ -7,7 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\couchbase-transactions-dotnet\src\Couchbase.Transactions\Couchbase.Transactions.csproj" />
+    <PackageReference Include="Couchbase.Transactions" Version="1.0.0-beta.1" />
   </ItemGroup>
 
 </Project>

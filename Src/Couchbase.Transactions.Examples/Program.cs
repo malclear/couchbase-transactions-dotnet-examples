@@ -43,7 +43,6 @@ namespace Couchbase.Transactions.Examples
 
             using var program = new Program(cluster, bucket, collection, transactions);
 
-
             Console.WriteLine("Hello World!");
         }
 
